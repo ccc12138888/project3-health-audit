@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<!--
+  【这是什么】单页仪表盘：纯 HTML + 内联 CSS/JS，由 Go embed 编译进二进制，访问 GET / 即可。
+
+  【怎么读代码】
+    1）先看 <header>：按钮对应调哪些 URL（pause/resume/run/refresh）。
+    2）再看 <script>：loadAll 并行请求多个 /api/v1/...，把 JSON 拼成表格 innerHTML。
+    3）表单 submitAdd：fetch POST JSON 到 /api/v1/endpoints。
+
+  【怎么用】浏览器打开 http://127.0.0.1:8080/（端口以服务端为准）；需先启动 go run ./cmd/server。
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>接口健康巡检</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --border: #2d3a4d;
+      --text: #e7ecf3;
+      --muted: #8b9cb3;
+      --accent: #3d8bfd;
+      --danger: #f87171;
+      --ok: #4ade80;
+      --warn: #fbbf24;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+    header {
+      padding: 1.25rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 1rem;
+      justify-content: space-between;
+      background: var(--panel);
+    }
+    h1 { font-size: 1.25rem; font-weight: 600; margin: 0; letter-spacing: 0.02em; }
+    .actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+    button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      padding: 0.5rem 1rem;
+      border-radius: 8px;
+      font-size: 0.875rem;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    button:hover { filter: brightness(1.08); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.secondary { background: transparent; border: 1px solid var(--border); color: var(--text); }
+    .status { font-size: 0.8rem; color: var(--muted); }
+    .alert-banner {
+      display: none;
+      margin: 1rem 1.5rem 0;
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      background: rgba(248, 113, 113, 0.12);
+      border: 1px solid var(--danger);
+      color: #fecaca;
+      font-size: 0.9rem;
+    }
+    .alert-banner.show { display: block; }
+    main { padding: 1.25rem 1.5rem 2rem; max-width: 1400px; margin: 0 auto; }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 1.1rem;
+    }
+    .card .label { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+    .card .value { font-size: 1.75rem; font-weight: 700; margin-top: 0.25rem; }
+    .card.danger .value { color: var(--danger); }
+    .card.ok .value { color: var(--ok); }
+    section {
+      margin-bottom: 2rem;
+    }
+    h2 {
+      font-size: 1rem;
+      font-weight: 600;
+      margin: 0 0 0.75rem;
+      color: var(--muted);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.8125rem;
+      background: var(--panel);
+      border-radius: 10px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    th, td { padding: 0.65rem 0.85rem; text-align: left; border-bottom: 1px solid var(--border); }
+    th { background: rgba(0,0,0,0.25); color: var(--muted); font-weight: 600; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(61, 139, 253, 0.06); }
+    .badge {
+      display: inline-block;
+      padding: 0.15rem 0.45rem;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-weight: 600;
+    }
+    .badge.on { background: rgba(74, 222, 128, 0.15); color: var(--ok); }
+    .badge.off { background: rgba(148, 163, 184, 0.2); color: var(--muted); }
+    .badge.anomaly { background: rgba(248, 113, 113, 0.15); color: var(--danger); }
+    .mono { font-family: ui-monospace, monospace; font-size: 0.78rem; word-break: break-all; }
+    .empty { color: var(--muted); padding: 1.5rem; text-align: center; }
+    .err { color: var(--danger); font-size: 0.85rem; margin-top: 0.5rem; }
+    .form-panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.1rem 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+    .form-panel h2 { margin-bottom: 1rem; color: var(--text); }
+    .form-grid {
+      display: grid;
+      grid-template-columns: 1fr 2fr;
+      gap: 0.85rem 1.25rem;
+      align-items: start;
+    }
+    @media (max-width: 800px) {
+      .form-grid { grid-template-columns: 1fr; }
+    }
+    .form-row label {
+      display: block;
+      font-size: 0.75rem;
+      color: var(--muted);
+      margin-bottom: 0.35rem;
+      font-weight: 600;
+    }
+    .form-row input[type="text"],
+    .form-row input[type="url"],
+    .form-row select {
+      width: 100%;
+      padding: 0.5rem 0.65rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      font-size: 0.875rem;
+    }
+    .form-row input:focus,
+    .form-row select:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    .form-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.75rem;
+      margin-top: 1rem;
+    }
+    .form-msg { font-size: 0.85rem; min-height: 1.25rem; }
+    .form-msg.ok { color: var(--ok); }
+    .form-msg.bad { color: var(--danger); }
+    .check-row { display: flex; align-items: center; gap: 0.5rem; margin-top: 1.5rem; }
+    .check-row input { width: auto; accent-color: var(--accent); }
+    .check-row label { margin: 0; font-size: 0.875rem; color: var(--text); }
+    .pause-pill {
+      padding: 0.3rem 0.65rem;
+      border-radius: 999px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+    .pause-pill.on { background: rgba(74, 222, 128, 0.18); color: var(--ok); }
+    .pause-pill.off { background: rgba(251, 191, 36, 0.2); color: var(--warn); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>接口健康巡检</h1>
+    <div class="actions">
+      <span class="status" id="clock">—</span>
+      <span class="pause-pill on" id="pausePill" title="全局：是否执行探活（登记数据仍保留）">巡检中</span>
+      <button type="button" class="secondary" id="btnPause">结束巡检</button>
+      <button type="button" class="secondary" id="btnResume" disabled>继续巡检</button>
+      <button type="button" class="secondary" id="btnRefresh">刷新数据</button>
+      <button type="button" id="btnRun">立即巡检</button>
+    </div>
+  </header>
+  <div class="alert-banner" id="alertBanner"></div>
+  <main>
+    <div class="cards">
+      <div class="card"><div class="label">已登记接口</div><div class="value" id="cEndpoints">—</div></div>
+      <div class="card ok"><div class="label">已启用</div><div class="value" id="cEnabled">—</div></div>
+      <div class="card danger"><div class="label">异常记录（当前列表）</div><div class="value" id="cAnomalies">—</div></div>
+    </div>
+    <p class="err" id="globalErr" hidden></p>
+
+    <section class="form-panel">
+      <h2>新增巡检接口</h2>
+      <form id="formAdd">
+        <div class="form-grid">
+          <div class="form-row">
+            <label for="inName">显示名称</label>
+            <input type="text" id="inName" name="name" required maxlength="128" placeholder="例如：订单服务" autocomplete="off" />
+          </div>
+          <div class="form-row">
+            <label for="inUrl">URL</label>
+            <input type="url" id="inUrl" name="url" required maxlength="512" placeholder="https://example.com/health" />
+          </div>
+          <div class="form-row">
+            <label for="inMethod">HTTP 方法</label>
+            <select id="inMethod" name="method">
+              <option value="GET" selected>GET</option>
+              <option value="POST">POST</option>
+              <option value="HEAD">HEAD</option>
+              <option value="PUT">PUT</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label for="inEnabled">是否启用</label>
+            <select id="inEnabled" name="enabled">
+              <option value="true" selected>启用（参与巡检）</option>
+              <option value="false">停用（仅保存）</option>
+            </select>
+          </div>
+        </div>
+        <div class="check-row">
+          <input type="checkbox" id="inRunAfter" />
+          <label for="inRunAfter">添加成功后立即执行一轮巡检</label>
+        </div>
+        <div class="form-actions">
+          <button type="submit" id="btnAdd">保存并登记</button>
+          <span class="form-msg" id="formMsg"></span>
+        </div>
+      </form>
+    </section>
+
+    <section>
+      <h2>已登记接口</h2>
+      <div id="wrapEndpoints"><div class="empty">加载中…</div></div>
+    </section>
+
+    <section>
+      <h2>异常巡检记录</h2>
+      <div id="wrapAnomalies"><div class="empty">加载中…</div></div>
+    </section>
+
+    <section>
+      <h2>最近巡检（全部接口）</h2>
+      <div id="wrapRecent"><div class="empty">加载中…</div></div>
+    </section>
+  </main>
+  <script>
+    /*
+     * 浏览器端脚本说明（按阅读顺序）：
+     *   $        用 id 取 DOM，少写 document.getElementById。
+     *   api()    封装 fetch：同域、检查 r.ok、解析 JSON；失败抛 Error 给 catch。
+     *   loadAll  并行拉 endpoints / anomalies / recent / check.state，再渲染三块表格 + 暂停 UI。
+     *   refresh  点「刷新」或定时器调用，包一层 try/catch 显示 globalErr。
+     *   runCheck POST /check/run；若服务端返回 409 表示当前处于「结束巡检」暂停。
+     *   submitAdd 表单提交：POST /endpoints，可选再 runCheck。
+     */
+    const $ = (id) => document.getElementById(id);
+    let inspectionPaused = false;
+
+    const api = (path) => fetch(path, { credentials: "same-origin" }).then((r) => {
+      if (!r.ok) throw new Error(r.status + " " + r.statusText);
+      return r.json();
+    });
+
+    function updatePauseUI(paused) {
+      inspectionPaused = !!paused;
+      const pill = $("pausePill");
+      pill.textContent = paused ? "已暂停" : "巡检中";
+      pill.className = "pause-pill " + (paused ? "off" : "on");
+      $("btnPause").disabled = paused;
+      $("btnResume").disabled = !paused;
+      $("btnRun").disabled = paused;
+    }
+
+    function fmtTime(iso) {
+      if (!iso) return "—";
+      try {
+        const d = new Date(iso);
+        return d.toLocaleString("zh-CN", { hour12: false });
+      } catch { return iso; }
+    }
+
+    function endpointName(map, id) {
+      const ep = map[id];
+      return ep ? ep.name + " (#" + id + ")" : "接口 #" + id;
+    }
+
+    async function loadAll() {
+      $("globalErr").hidden = true;
+      const [endpoints, anomalies, recent, state] = await Promise.all([
+        api("/api/v1/endpoints"),
+        api("/api/v1/logs/anomalies"),
+        api("/api/v1/logs/recent?limit=80"),
+        api("/api/v1/check/state"),
+      ]);
+
+      updatePauseUI(state.paused);
+
+      const epMap = {};
+      let enabled = 0;
+      for (const e of endpoints) {
+        epMap[e.id] = e;
+        if (e.enabled) enabled++;
+      }
+      $("cEndpoints").textContent = String(endpoints.length);
+      $("cEnabled").textContent = String(enabled);
+      $("cAnomalies").textContent = String(anomalies.length);
+
+      const banner = $("alertBanner");
+      if (anomalies.length > 0) {
+        banner.textContent = "存在 " + anomalies.length + " 条异常记录，请关注下方「异常巡检记录」表格。";
+        banner.classList.add("show");
+      } else {
+        banner.classList.remove("show");
+      }
+
+      if (endpoints.length === 0) {
+        $("wrapEndpoints").innerHTML = '<div class="empty">暂无登记。请使用上方「新增巡检接口」表单添加。</div>';
+      } else {
+        $("wrapEndpoints").innerHTML =
+          "<table><thead><tr><th>ID</th><th>名称</th><th>URL</th><th>方法</th><th>启用</th></tr></thead><tbody>" +
+          endpoints
+            .map(
+              (e) =>
+                "<tr><td class='mono'>" +
+                e.id +
+                "</td><td>" +
+                escapeHtml(e.name) +
+                "</td><td class='mono'>" +
+                escapeHtml(e.url) +
+                "</td><td>" +
+                escapeHtml(e.method || "GET") +
+                "</td><td><span class='badge " +
+                (e.enabled ? "on" : "off") +
+                "'>" +
+                (e.enabled ? "启用" : "停用") +
+                "</span></td></tr>"
+            )
+            .join("") +
+          "</tbody></table>";
+      }
+
+      if (anomalies.length === 0) {
+        $("wrapAnomalies").innerHTML = '<div class="empty">暂无异常记录。</div>';
+      } else {
+        $("wrapAnomalies").innerHTML =
+          "<table><thead><tr><th>时间</th><th>接口</th><th>状态码</th><th>耗时 ms</th><th>说明</th></tr></thead><tbody>" +
+          anomalies
+            .map((row) => {
+              const name = endpointName(epMap, row.endpoint_id);
+              return (
+                "<tr><td>" +
+                fmtTime(row.created_at) +
+                "</td><td>" +
+                escapeHtml(name) +
+                "</td><td class='mono'>" +
+                row.status_code +
+                "</td><td>" +
+                row.latency_ms +
+                "</td><td class='mono'>" +
+                escapeHtml(row.error_message || (row.ok ? "" : "非成功响应")) +
+                "</td></tr>"
+              );
+            })
+            .join("") +
+          "</tbody></table>";
+      }
+
+      if (recent.length === 0) {
+        $("wrapRecent").innerHTML = '<div class="empty">暂无巡检日志。点击「立即巡检」或等待定时任务。</div>';
+      } else {
+        $("wrapRecent").innerHTML =
+          "<table><thead><tr><th>时间</th><th>接口</th><th>结果</th><th>状态码</th><th>耗时 ms</th></tr></thead><tbody>" +
+          recent
+            .map((row) => {
+              const name = endpointName(epMap, row.endpoint_id);
+              const okTag = row.ok
+                ? "<span class='badge on'>OK</span>"
+                : "<span class='badge off'>FAIL</span>";
+              const an = row.anomaly ? " <span class='badge anomaly'>异常</span>" : "";
+              return (
+                "<tr><td>" +
+                fmtTime(row.created_at) +
+                "</td><td>" +
+                escapeHtml(name) +
+                "</td><td>" +
+                okTag +
+                an +
+                "</td><td class='mono'>" +
+                row.status_code +
+                "</td><td>" +
+                row.latency_ms +
+                "</td></tr>"
+              );
+            })
+            .join("") +
+          "</tbody></table>";
+      }
+    }
+
+    function escapeHtml(s) {
+      if (s == null) return "";
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    async function refresh() {
+      $("btnRefresh").disabled = true;
+      try {
+        await loadAll();
+      } catch (e) {
+        $("globalErr").textContent = "加载失败: " + e.message;
+        $("globalErr").hidden = false;
+      }
+      $("btnRefresh").disabled = false;
+    }
+
+    async function runCheck() {
+      if (inspectionPaused) {
+        $("globalErr").textContent = "当前为「结束巡检」暂停状态，请先点击「继续巡检」。";
+        $("globalErr").hidden = false;
+        return;
+      }
+      $("btnRun").disabled = true;
+      $("globalErr").hidden = true;
+      try {
+        const r = await fetch("/api/v1/check/run", { method: "POST", credentials: "same-origin" });
+        const j = await r.json().catch(() => ({}));
+        if (r.status === 409) {
+          throw new Error(j.error || "巡检已暂停");
+        }
+        if (!r.ok) {
+          throw new Error(j.error || r.statusText);
+        }
+        await loadAll();
+      } catch (e) {
+        $("globalErr").textContent = "巡检失败: " + e.message;
+        $("globalErr").hidden = false;
+      } finally {
+        $("btnRun").disabled = inspectionPaused;
+      }
+    }
+
+    async function pauseInspection() {
+      $("btnPause").disabled = true;
+      $("globalErr").hidden = true;
+      try {
+        const r = await fetch("/api/v1/check/pause", { method: "POST", credentials: "same-origin" });
+        if (!r.ok) throw new Error(await r.text());
+        await loadAll();
+      } catch (e) {
+        $("globalErr").textContent = "无法结束巡检: " + e.message;
+        $("globalErr").hidden = false;
+      } finally {
+        $("btnPause").disabled = inspectionPaused;
+        $("btnResume").disabled = !inspectionPaused;
+      }
+    }
+
+    async function resumeInspection() {
+      $("btnResume").disabled = true;
+      $("globalErr").hidden = true;
+      try {
+        const r = await fetch("/api/v1/check/resume", { method: "POST", credentials: "same-origin" });
+        if (!r.ok) throw new Error(await r.text());
+        await loadAll();
+      } catch (e) {
+        $("globalErr").textContent = "无法恢复巡检: " + e.message;
+        $("globalErr").hidden = false;
+      } finally {
+        $("btnPause").disabled = inspectionPaused;
+        $("btnResume").disabled = !inspectionPaused;
+      }
+    }
+
+    function tick() {
+      $("clock").textContent = "当前时间 " + new Date().toLocaleString("zh-CN", { hour12: false });
+    }
+
+    async function submitAdd(ev) {
+      ev.preventDefault();
+      const msg = $("formMsg");
+      msg.textContent = "";
+      msg.className = "form-msg";
+      $("globalErr").hidden = true;
+
+      const name = ($("inName").value || "").trim();
+      const url = ($("inUrl").value || "").trim();
+      const method = $("inMethod").value || "GET";
+      const enabled = $("inEnabled").value === "true";
+      const runAfter = $("inRunAfter").checked;
+
+      if (!name || !url) {
+        msg.textContent = "请填写名称和 URL。";
+        msg.classList.add("bad");
+        return;
+      }
+
+      const body = { name: name, url: url, method: method, enabled: enabled };
+      $("btnAdd").disabled = true;
+      try {
+        const r = await fetch("/api/v1/endpoints", {
+          method: "POST",
+          headers: { "Content-Type": "application/json; charset=utf-8" },
+          credentials: "same-origin",
+          body: JSON.stringify(body),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          throw new Error(j.error || r.status + " " + r.statusText);
+        }
+        msg.textContent = "已添加（id=" + j.id + "）。";
+        msg.classList.add("ok");
+        $("inName").value = "";
+        $("inUrl").value = "";
+        $("inMethod").value = "GET";
+        $("inEnabled").value = "true";
+        $("inRunAfter").checked = false;
+        await loadAll();
+        if (runAfter) {
+          if (inspectionPaused) {
+            msg.textContent = "已添加（id=" + j.id + "）。当前为「结束巡检」状态，未执行探活。";
+          } else {
+            await runCheck();
+            if ($("globalErr").hidden) {
+              msg.textContent = "已添加（id=" + j.id + "），并完成一轮巡检。";
+            }
+          }
+        }
+      } catch (e) {
+        msg.textContent = "添加失败: " + e.message;
+        msg.classList.add("bad");
+      }
+      $("btnAdd").disabled = false;
+    }
+
+    $("btnRefresh").addEventListener("click", refresh);
+    $("btnRun").addEventListener("click", runCheck);
+    $("btnPause").addEventListener("click", pauseInspection);
+    $("btnResume").addEventListener("click", resumeInspection);
+    $("formAdd").addEventListener("submit", submitAdd);
+    tick();
+    setInterval(tick, 1000);
+    refresh();
+    setInterval(refresh, 15000);
+  </script>
+</body>
+</html>
