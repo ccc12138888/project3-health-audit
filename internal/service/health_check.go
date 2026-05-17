@@ -36,10 +36,10 @@ type HealthCheckService struct {
 
 // NewHealthCheckService 构造 HTTP 客户端：整次请求超时为 timeout；不重定向跟随（见 CheckRedirect）。
 func NewHealthCheckService(
-	ep *repository.EndpointRepository,
-	lg *repository.CheckLogRepository,
-	pool *worker.Pool,
-	timeout time.Duration,
+	ep *repository.EndpointRepository, // 接口配置仓库（查要巡检哪些URL）
+	lg *repository.CheckLogRepository, // 巡检日志仓库（存巡检结果）
+	pool *worker.Pool, // 协程池（控制并发，防止炸服务器）
+	timeout time.Duration,  // HTTP请求超时时间
 ) *HealthCheckService {
 	return &HealthCheckService{
 		endpoints: ep,
