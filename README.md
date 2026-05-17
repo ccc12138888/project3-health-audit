@@ -146,6 +146,4 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/check/run
 
 默认 Go module 为 `github.com/example/health-audit`。若你 fork 到自己的仓库，请全局替换为你的 module 路径并调整 import。
 
-## License
 
-MIT（可按需修改或删除本节。）

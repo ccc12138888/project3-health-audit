@@ -33,7 +33,7 @@ type Config struct {
 //   WORKER_POOL_SIZE    协程池大小，默认 8
 func Load() Config {
 	// 默认 MySQL DSN：无密码；有密码请不要写死在代码里，用环境变量 DB_DSN。
-	defaultMySQL := "root@tcp(127.0.0.1:3306)/health_audit?charset=utf8mb4&parseTime=True&loc=Local"
+	defaultMySQL := "root:root@tcp(127.0.0.1:3306)/health_audit?charset=utf8mb4&parseTime=True&loc=Local"
 	return Config{
 		Addr:           getenv("HTTP_ADDR", ":8080"), // 浏览器访问 http://127.0.0.1:8080
 		DBDriver:       getenv("DB_DRIVER", "mysql"),   // 与 internal/database 里 switch 一致
